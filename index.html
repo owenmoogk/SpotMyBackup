@@ -184,6 +184,9 @@
 
 
 var conf = config;
+if (!conf.uri) {
+    conf.uri = window.location.origin;
+}
 
 var authWindow = null;
 var token = null;
@@ -253,17 +256,23 @@ function refreshProgress() {
     setTimeout(refreshProgress, 1000);
 }
 
-function login() {
+async function login() {
     var width = 480, height = 640;
     var left = (screen.width / 2) - (width / 2);
     var top = (screen.height / 2) - (height / 2);
+
+    var verifier = generateCodeVerifier();
+    sessionStorage.setItem('pkce_verifier', verifier);
+    var challenge = await generateCodeChallenge(verifier);
 
     var set = {
       client_id: conf.client_id,
       redirect_uri: conf.redirect_uri,
       scope: 'playlist-read playlist-read-private playlist-modify-public playlist-modify-private user-library-read user-library-modify',
-      response_type: 'token',
-      show_dialog: 'true'
+      response_type: 'code',
+      show_dialog: 'true',
+      code_challenge_method: 'S256',
+      code_challenge: challenge
     };
     authWindow = window.open(
         "https://accounts.spotify.com/authorize?" + urlEncodeSet(set),
@@ -273,15 +282,92 @@ function login() {
 }
 
 function authCallback(event){
-    if (event.origin !== conf.uri) {
+    var allowedOrigins = [window.location.origin];
+    if (conf.uri) {
+        allowedOrigins.push(conf.uri);
+    }
+    if (allowedOrigins.indexOf(event.origin) === -1) {
         console.log("config.uri missconfigured:");
-        console.log({ uri: conf.uri, origin: origin });
+        console.log({ uri: conf.uri, origin: event.origin });
         return;
     }
     if (authWindow) {
         authWindow.close();
     }
-    handleAuth(event.data);
+    var data = event.data;
+    if (data && typeof data === 'object' && data.type === 'auth_code') {
+        exchangeCodeForToken(data.code);
+        return;
+    }
+    handleAuth(normalizeAccessToken(data));
+}
+
+function normalizeAccessToken(value) {
+    if (!value) {
+        return value;
+    }
+    if (typeof value === 'string' && value.indexOf('access_token=') !== -1) {
+        var params = new URLSearchParams(value.replace(/^#/, ''));
+        return params.get('access_token');
+    }
+    return value;
+}
+
+function generateCodeVerifier() {
+    var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+    var result = '';
+    var array = new Uint8Array(64);
+    window.crypto.getRandomValues(array);
+    for (var i = 0; i < array.length; i++) {
+        result += chars.charAt(array[i] % chars.length);
+    }
+    return result;
+}
+
+async function generateCodeChallenge(verifier) {
+    var data = new TextEncoder().encode(verifier);
+    var digest = await window.crypto.subtle.digest('SHA-256', data);
+    return base64UrlEncode(digest);
+}
+
+function base64UrlEncode(arrayBuffer) {
+    var bytes = new Uint8Array(arrayBuffer);
+    var binary = '';
+    for (var i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function exchangeCodeForToken(code) {
+    var verifier = sessionStorage.getItem('pkce_verifier');
+    if (!verifier) {
+        console.log("Missing PKCE verifier");
+        return;
+    }
+    var body = new URLSearchParams({
+        client_id: conf.client_id,
+        grant_type: 'authorization_code',
+        code: code,
+        redirect_uri: conf.redirect_uri,
+        code_verifier: verifier
+    });
+    fetch('https://accounts.spotify.com/api/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString()
+    })
+    .then(function (resp) { return resp.json(); })
+    .then(function (data) {
+        if (data && data.access_token) {
+            handleAuth(data.access_token);
+        } else {
+            console.log("Token exchange failed", data);
+        }
+    })
+    .catch(function (err) {
+        console.log("Token exchange error", err);
+    });
 }
 
 function urlEncodeSet(set) {

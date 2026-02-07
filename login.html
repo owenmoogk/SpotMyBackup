@@ -11,9 +11,23 @@
 			window.onload = function() {
 				var target = window.self === window.top ? window.opener : window.parent;
 				var hash = window.location.hash;
+				var search = window.location.search;
+				if (search) {
+				    var searchParams = new URLSearchParams(search.replace(/^\?/, ''));
+				    var code = searchParams.get('code');
+				    if (code) {
+				        target.postMessage({ type: 'auth_code', code: code }, "*"); //validate origin in opener
+				        return;
+				    }
+				}
 				if (hash) {
-				    var token = window.location.hash.split('&')[0].split('=')[1];
-				    target.postMessage(token, conf.uri); //embedded
+				    var hashParams = new URLSearchParams(hash.replace(/^#/, ''));
+				    var token = hashParams.get('access_token');
+				    if (token) {
+				        target.postMessage(token, "*"); //embedded; validate origin in opener
+				    } else {
+				        console.log("No access_token in hash", hash);
+				    }
 				}
 			}
 		</script>
